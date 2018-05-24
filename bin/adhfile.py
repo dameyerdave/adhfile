@@ -7,6 +7,7 @@ from datetime import datetime
 import dateutil.parser
 from itertools import chain
 import backports.configparser as configparser
+from file_read_backwards import FileReadBackwards
 
 @Configuration()
 class AdhfileCommand(GeneratingCommand):
@@ -21,13 +22,16 @@ class AdhfileCommand(GeneratingCommand):
     %(description)
 
     ##TODO:
-    - datetime parser
-    - field extraction by config
+    - datetime parser -- ok
+    - field extraction by config -- ok
     - multiline support
+    - caching in memory
+    - field aliases
 
     """
-    count = Option(require=True, validate=validators.Integer())
+
     file = Option(require=True)
+    count = Option(require=False, default=10, validate=validators.Integer())
     sourcetype = Option(require=False, default='adhfile')
 
     kv = re.compile(r"\b(\w+)\s*?=\s*([^=]*)(?=\s+\w+\s*=|$)")
@@ -70,24 +74,27 @@ class AdhfileCommand(GeneratingCommand):
             for key, value in config[self.sourcetype].items():
                 if key.startswith('extract-'):
                     extracts.append(re.compile(value.replace('?<', '?P<')))
-        with open(self.file, "r") as f:
+        with FileReadBackwards(self.file) as f:
             i = 0
             for line in f:
                 i = i + 1
-                if i > self.count:
+                if self.count > -1 and i > self.count:
                     break
                 ret = {}
                 try:
                     for date in self.find_dates(line, allow_overlapping=False):
-                        ret['_time'] = date.strftime("%s.%f")
-                        break
+                        try:
+                            ret['_time'] = date.strftime("%s.%f")
+                            break
+                        except Exception as e:
+                            break
                     if not '_time' in ret:
                         ret['_time'] = time.time()
                     ret['_raw'] = line
                     ret['source'] = self.file
                     ret['sourcetype'] = self.sourcetype
                     for (field, value) in self.kv.findall(line):
-                        ret[field] = value
+                        ret[field] = value.replace('"', '')
                     for extract in extracts:
                         match = extract.search(line)
                         if match:
