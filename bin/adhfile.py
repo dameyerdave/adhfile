@@ -26,15 +26,18 @@ class AdhfileCommand(GeneratingCommand):
     - field extraction by config -- ok
     - multiline support
     - caching in memory
-    - field aliases
+    - field aliases -- ok
+    - paging -- ok
 
     """
 
     file = Option(require=True)
-    count = Option(require=False, default=10, validate=validators.Integer())
+    page = Option(require=False, default=0, validate=validators.Integer())
+    psize = Option(require=False, default=10, validate=validators.Integer())
     sourcetype = Option(require=False, default='adhfile')
 
     kv = re.compile(r"\b(\w+)\s*?=\s*([^=]*)(?=\s+\w+\s*=|$)")
+    re_alias = re.compile(r"(\w+) as (\w+)")
 
     # Add more strings that confuse the parser in the list
     UNINTERESTING = set(chain(dateutil.parser.parserinfo.JUMP,
@@ -68,17 +71,26 @@ class AdhfileCommand(GeneratingCommand):
 
     def generate(self):
         extracts = []
+        aliases = {}
         config = configparser.ConfigParser()
         config.read(os.path.dirname(__file__) + '/../default/props.conf')
         if self.sourcetype in config:
             for key, value in config[self.sourcetype].items():
                 if key.startswith('extract-'):
                     extracts.append(re.compile(value.replace('?<', '?P<')))
+                if key.startswith('fieldalias-'):
+                    match = self.re_alias.match(value)
+                    if match:
+                        field, alias = match.groups()
+                        #print("%s = %s" % (field, alias))
+                        aliases[field] = alias
         with FileReadBackwards(self.file) as f:
-            i = 0
+            i = -1
             for line in f:
                 i = i + 1
-                if self.count > -1 and i > self.count:
+                if i < (self.page * self.psize):
+                    continue
+                if i >= ((self.page + 1) * self.psize):
                     break
                 ret = {}
                 try:
@@ -100,6 +112,9 @@ class AdhfileCommand(GeneratingCommand):
                         if match:
                             for field, value in match.groupdict().items():
                                 ret[field] = value
+                    for field, value in ret.items():
+                        if field in aliases:
+                            ret[aliases[field]] = ret[field]
                     yield ret
                 except Exception as e:
                     print("Error: %s." % str(e))
