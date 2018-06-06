@@ -3,6 +3,7 @@
 import sys, time, re, os, sys
 from splunklib.searchcommands import dispatch, GeneratingCommand, Configuration, Option, validators
 import splunklib.client
+from csv import reader
 from datetime import datetime
 import dateutil.parser
 from itertools import chain
@@ -35,6 +36,7 @@ class AdhfileCommand(GeneratingCommand):
     page = Option(require=False, default=0, validate=validators.Integer())
     psize = Option(require=False, default=10, validate=validators.Integer())
     sourcetype = Option(require=False, default='adhfile')
+    grep = Option(require=False, default=None)
 
     kv = re.compile(r"\b(\w+)\s*?=\s*([^=]*)(?=\s+\w+\s*=|$)")
     re_alias = re.compile(r"(\w+) as (\w+)")
@@ -71,13 +73,24 @@ class AdhfileCommand(GeneratingCommand):
 
     def generate(self):
         extracts = []
+        transforms = []
         aliases = {}
-        config = configparser.ConfigParser()
-        config.read(os.path.dirname(__file__) + '/../default/props.conf')
-        if self.sourcetype in config:
-            for key, value in config[self.sourcetype].items():
+        props_conf = configparser.ConfigParser()
+        props_conf.read(os.path.dirname(__file__) + '/../default/props.conf')
+        transforms_conf = configparser.ConfigParser()
+        transforms_conf.read(os.path.dirname(__file__) + '/../default/transforms.conf')
+        if self.sourcetype in props_conf:
+            for key, value in props_conf[self.sourcetype].items():
                 if key.startswith('extract-'):
                     extracts.append(re.compile(value.replace('?<', '?P<')))
+                if key.startswith('report-'):
+                    if value in transforms_conf:
+                        delim = transforms_conf[value]['DELIMS'].replace('"', '')
+                        fields = transforms_conf[value]['FIELDS'].replace('"', '').split(',')
+                        transform = {}
+                        transform['delim'] = delim
+                        transform['fields'] = fields
+                        transforms.append(transform)
                 if key.startswith('fieldalias-'):
                     match = self.re_alias.match(value)
                     if match:
@@ -87,6 +100,10 @@ class AdhfileCommand(GeneratingCommand):
         with FileReadBackwards(self.file) as f:
             i = -1
             for line in f:
+                if self.grep:
+                    grep = re.compile('.*' + self.grep + '.*')
+                    if not grep.match(line):
+                        continue
                 i = i + 1
                 if i < (self.page * self.psize):
                     continue
@@ -112,6 +129,14 @@ class AdhfileCommand(GeneratingCommand):
                         if match:
                             for field, value in match.groupdict().items():
                                 ret[field] = value
+                    for transform in transforms:
+                        f = 0
+                        for value in (list(reader([line], delimiter=str(transform['delim'])))[0]):
+                            if f >= len(transform['fields']):
+                                break
+                            if transform['fields'][f] != '':
+                                ret[transform['fields'][f]] = value
+                            f = f + 1
                     for field, value in ret.items():
                         if field in aliases:
                             ret[aliases[field]] = ret[field]
